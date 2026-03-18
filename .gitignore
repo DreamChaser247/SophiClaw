@@ -1,0 +1,15 @@
+# SophiClaw — never commit these
+config.py
+goal.json
+db/
+*.jsonl
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+dist/
+build/
+*.spec
