@@ -74,7 +74,7 @@ fi
 
 info "Aktualizuję zależności..."
 "$VENV_DIR/bin/pip" install --quiet --upgrade pip
-"$VENV_DIR/bin/pip" install --quiet discord.py aiohttp openai
+"$VENV_DIR/bin/pip" install --quiet discord.py aiohttp openai matplotlib
 ok "Zależności zainstalowane"
 
 # ── Step 3: Discord token ──────────────────────────────────────────

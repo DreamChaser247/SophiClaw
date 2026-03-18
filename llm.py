@@ -31,7 +31,7 @@ class LLMAdapter:
         model: str,
         vision_enabled: bool = True,
         temperature: float = 0.65,
-        max_tokens: int = 2048,
+        max_tokens: int = 8192,
     ):
         self.model = model
         self.vision_enabled = vision_enabled

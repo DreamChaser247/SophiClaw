@@ -37,7 +37,7 @@ if not exist ".venv\" (
 )
 echo  Instaluje zaleznosci...
 .venv\Scripts\pip install --quiet --upgrade pip
-.venv\Scripts\pip install --quiet discord.py aiohttp openai
+.venv\Scripts\pip install --quiet discord.py aiohttp openai matplotlib
 if errorlevel 1 ( echo  [BLAD] Instalacja nie powiodla sie. & pause & exit /b 1 )
 echo  [OK] Zaleznosci zainstalowane
 
@@ -197,7 +197,7 @@ echo.
 echo VISION_ENABLED          = !VISION_ENABLED!
 echo SESSION_TIMEOUT_SECONDS = 3600
 echo MAX_CONTEXT             = 12
-echo DB_PATH                 = "sophiclaw.db"
+echo DB_PATH                 = "db/sophiclaw.db"
 echo LOG_PATH                = "log.jsonl"
 echo GOAL_PATH               = "goal.json"
 ) > config.py

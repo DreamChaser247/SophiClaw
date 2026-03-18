@@ -21,5 +21,11 @@ if grep -q 'DISCORD_BOT_TOKEN = ""' config.py; then
     exit 1
 fi
 
+# Check for required libraries
+if ! "$VENV_DIR/bin/python" -c "import discord, aiohttp, openai, matplotlib" 2>/dev/null; then
+    echo "❌  Brakuje wymaganych bibliotek. Uruchom: ./setup.sh"
+    exit 1
+fi
+
 echo "🐾  Uruchamiam SophiClaw..."
 "$VENV_DIR/bin/python" sophiclaw.py

@@ -22,6 +22,14 @@ if not errorlevel 1 (
     exit /b 1
 )
 
+:: Check for required libraries
+.venv\Scripts\python -c "import discord, aiohttp, openai, matplotlib" >nul 2>&1
+if errorlevel 1 (
+    echo [BLAD] Brakuje wymaganych bibliotek. Uruchom setup.bat
+    pause
+    exit /b 1
+)
+
 echo Uruchamiam SophiClaw...
 .venv\Scripts\python sophiclaw.py
 

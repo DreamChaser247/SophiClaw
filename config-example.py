@@ -42,6 +42,7 @@ VISION_ENABLED = True
 # ── Behaviour ──────────────────────────────────────────────────────
 SESSION_TIMEOUT_SECONDS = 3600   # new session after 1 h of silence
 MAX_CONTEXT             = 12     # how many past turns to keep
+MAX_TOKENS              = 16384   # max tokens in LLM response — increase if answers get cut off
 DB_PATH                 = "sophiclaw.db"
 LOG_PATH                = "log.jsonl"
 GOAL_PATH               = "goal.json"
