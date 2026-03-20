@@ -301,3 +301,23 @@ class Database:
             "INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)", (key, value)
         )
         self.conn.commit()
+
+    # ── User Model Preferences ─────────────────────────────────────
+
+    def get_user_model_preference(self, user_id: int) -> Optional[str]:
+        """Get a user's preferred model, or None if not set."""
+        key = f"user:{user_id}:preferred_model"
+        try:
+            result = self.conn.execute(
+                "SELECT value FROM settings WHERE key = ?",
+                (key,),
+            ).fetchone()
+            return result[0] if result else None
+        except Exception as e:
+            log.warning("Could not get user model preference: %s", e)
+            return None
+
+    def set_user_model_preference(self, user_id: int, model: str) -> None:
+        """Set a user's preferred model."""
+        key = f"user:{user_id}:preferred_model"
+        self.set_setting(key, model)

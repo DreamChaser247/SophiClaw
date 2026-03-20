@@ -45,7 +45,7 @@ db.connect()
 llm_adapter = llm.LLMAdapter(
     base_url=getattr(config, "API_BASE", "https://generativelanguage.googleapis.com/v1beta/openai/"),
     api_key=getattr(config, "API_KEY", ""),
-    model=getattr(config, "MODEL", "gemini-2.5-flash"),
+    model=getattr(config, "MODEL", ["gemini-3-flash", "gemini-3.1-flash-lite"]),
     vision_enabled=getattr(config, "VISION_ENABLED", True),
     max_tokens=getattr(config, "MAX_TOKENS", 8192),
 )
@@ -252,8 +252,9 @@ async def on_ready() -> None:
 
     vision_note = "uczniowie mogą wysyłać zdjęcia 📸" if llm_adapter.vision_enabled \
                   else "tryb tekstowy (VISION_ENABLED=False)"
+    current_model = llm_adapter.models[llm_adapter.current_model_index] if hasattr(llm_adapter, 'models') else getattr(llm_adapter, 'model', 'unknown')
     print(f"\n✅  SophiClaw ready — {vision_note}")
-    print(f"    Model   : {llm_adapter.model}")
+    print(f"    Model   : {current_model}")
     print(f"    DB      : {db.path}")
     print(f"    Komendy : /help /summary /progress /notes /last10 /end\n")
     _timeout_checker.start()

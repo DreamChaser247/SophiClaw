@@ -163,3 +163,35 @@ class SophiCommands(commands.Cog):
 
         embed.description = "\n".join(lines)
         await interaction.followup.send(embed=embed)
+
+    # ── /model ────────────────────────────────────────────────────
+
+    @app_commands.command(name="model", description="Pokaż aktualny model i dostępne modele")
+    async def model(self, interaction: discord.Interaction):
+        """Show current model configuration."""
+        await interaction.response.defer(ephemeral=True)
+        
+        configured_models = getattr(config, "MODEL", ["gemini-3-flash", "gemini-3.1-flash-lite"])
+        user_preference = self.db.get_user_model_preference(interaction.user.id)
+        
+        embed = discord.Embed(
+            title="🤖 Aktualny Model",
+            description=(
+                "Bot używa modeli z automatycznym fallbackiem, jeśli któryś jest niedostępny.\n\n"
+                "**Dostępne modele:**"
+            ),
+            color=0x00FFFF
+        )
+        
+        for i, model in enumerate(configured_models):
+            if model == user_preference:
+                embed.add_field(name=f"{model} ✓", value="Ustawiony jako preferowany", inline=False)
+            else:
+                embed.add_field(name=model, value="Dostępny w razie potrzeby", inline=False)
+        
+        if user_preference:
+            embed.set_footer(text=f"Twój preferowany model to: {user_preference}")
+        else:
+            embed.set_footer(text="Nie masz preferowanego modelu — używamy kolejności z config.py")
+        
+        await interaction.followup.send(embed=embed, ephemeral=True)
