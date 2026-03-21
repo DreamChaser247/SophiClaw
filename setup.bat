@@ -194,16 +194,48 @@ echo API_BASE = "!API_BASE!"
 echo API_KEY  = "!API_KEY!"
 echo MODEL    = "!MODEL!"
 echo.
-echo VISION_ENABLED          = !VISION_ENABLED!
-echo SESSION_TIMEOUT_SECONDS = 3600
-echo MAX_CONTEXT             = 12
-echo DB_PATH                 = "db/sophiclaw.db"
-echo LOG_PATH                = "log.jsonl"
-echo GOAL_PATH               = "goal.json"
+echo VISION_ENABLED           = !VISION_ENABLED!
+echo SESSION_TIMEOUT_SECONDS  = 3600
+echo MAX_CONTEXT              = 12
+echo MAX_TOKENS               = 16384
+echo DB_PATH                  = "sophiclaw.db"
+echo LOG_PATH                 = "log.jsonl"
+echo GOAL_PATH                = "goal.json"
+echo.
+echo REVIEW_EVERY_N_SESSIONS  = 5
 ) > config.py
 
 echo.
 echo  [OK] config.py zapisany
+
+:: ── Validate: ensure config.py has all vars from config-example.py ─
+echo.
+echo  Weryfikacja config.py...
+if exist "config-example.py" (
+    .venv\Scripts\python -c ^
+"import re, sys
+def extract_vars(path):
+    v = {}
+    with open(path, encoding='utf-8') as f:
+        for line in f:
+            m = re.match(r'^([A-Z_][A-Z0-9_]*)\s*=', line)
+            if m: v[m.group(1)] = line.rstrip()
+    return v
+ex = extract_vars('config-example.py')
+cf = extract_vars('config.py')
+missing = {k: v for k, v in ex.items() if k not in cf}
+if not missing:
+    print('  [OK] config.py zawiera wszystkie wymagane zmienne')
+    sys.exit(0)
+print('  [INFO] Dodaje brakujace zmienne: ' + ', '.join(missing))
+with open('config.py', 'a', encoding='utf-8') as f:
+    f.write('\n# Dodane automatycznie przez setup.bat\n')
+    for name, line in missing.items(): f.write(line + '\n')
+print('  [OK] config.py zaktualizowany')"
+) else (
+    echo  [INFO] Brak config-example.py -- pomijam weryfikacje
+)
+
 echo.
 echo  ==========================================
 echo    Gotowe^^!  Uruchom bota: start.bat

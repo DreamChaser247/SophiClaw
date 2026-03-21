@@ -22,6 +22,7 @@ import llm
 import latex_render
 import prompts
 from commands import SophiCommands
+from review import run_review, _run_shadow, _end_session
 
 # ── Logging ────────────────────────────────────────────────────────
 
@@ -45,14 +46,15 @@ db.connect()
 llm_adapter = llm.LLMAdapter(
     base_url=getattr(config, "API_BASE", "https://generativelanguage.googleapis.com/v1beta/openai/"),
     api_key=getattr(config, "API_KEY", ""),
-    model=getattr(config, "MODEL", ["gemini-3-flash", "gemini-3.1-flash-lite"]),
+    model=getattr(config, "MODEL", "gemini-2.5-flash"),
     vision_enabled=getattr(config, "VISION_ENABLED", True),
     max_tokens=getattr(config, "MAX_TOKENS", 8192),
 )
 
-SESSION_TIMEOUT = getattr(config, "SESSION_TIMEOUT_SECONDS", 3600)
-MAX_CONTEXT     = getattr(config, "MAX_CONTEXT", 12)
-LOG_PATH        = Path(getattr(config, "LOG_PATH", "log.jsonl"))
+SESSION_TIMEOUT      = getattr(config, "SESSION_TIMEOUT_SECONDS", 3600)
+MAX_CONTEXT          = getattr(config, "MAX_CONTEXT", 12)
+LOG_PATH             = Path(getattr(config, "LOG_PATH", "log.jsonl"))
+REVIEW_EVERY_N       = getattr(config, "REVIEW_EVERY_N_SESSIONS", 5)
 
 # ── Goal loading ───────────────────────────────────────────────────
 
@@ -92,7 +94,7 @@ def _get_or_create_session(user_id: int) -> dict:
         idle = (now - state["last_active"]).total_seconds()
         if idle > SESSION_TIMEOUT:
             log.info("Session timeout for user %d", user_id)
-            asyncio.create_task(_run_shadow(state))
+            asyncio.create_task(_end_session(state))
             state = None
 
     if not state:
@@ -118,51 +120,8 @@ def _log(role: str, content: str, session_id: str, has_image: bool = False) -> N
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
-# ── Shadow prompts ─────────────────────────────────────────────────
-
-async def _run_shadow(state: dict) -> None:
-    sid     = state["session_id"]
-    history = state.get("history", [])
-    if not history:
-        return
-
-    transcript = "\n".join(
-        f"{m['role'].upper()}: " +
-        (m["content"] if isinstance(m["content"], str) else "[multimodal]")
-        for m in history
-    )
-
-    # Shadow 1 — JSON scoring
-    s1_msgs = [
-        {"role": "system", "content": "Odpowiadaj TYLKO w formacie JSON, bez żadnego innego tekstu."},
-        {"role": "user",   "content": f"{prompts.SHADOW_SCORING_PROMPT}\n\nSESJA:\n{transcript}"},
-    ]
-    json_text = await llm_adapter.send_shadow(s1_msgs)
-    try:
-        clean = json_text.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
-        for item in json.loads(clean):
-            db.add_attempt(
-                session_id  = sid,
-                topic_code  = item.get("topic", "UNKNOWN"),
-                difficulty  = max(1, min(6, int(item.get("difficulty", 3)))),
-                score       = max(0, min(6, int(item.get("score", 3)))),
-                llm_json    = json.dumps(item, ensure_ascii=False),
-            )
-    except Exception as e:
-        log.warning("Shadow 1 parse error: %s", e)
-
-    # Shadow 2 — descriptive note
-    s2_msgs = [
-        {"role": "system", "content": "Jesteś analitykiem postępów ucznia."},
-        {"role": "user",   "content": f"{prompts.SHADOW_NOTES_PROMPT}\n\nSESJA:\n{transcript}"},
-    ]
-    note = await llm_adapter.send_shadow(s2_msgs)
-    if note and not note.startswith("❌"):
-        db.add_note(sid, note.strip())
-
-    db.mark_shadow_done(sid)
-    db.end_session(sid)
-    log.info("Shadow done for session %s", sid)
+# ── Shadow + auto-review ───────────────────────────────────────────
+# These functions are now in review.py for better organization
 
 
 # ── Message sending ────────────────────────────────────────────────
@@ -236,14 +195,19 @@ async def _send_response(message: discord.Message, text: str) -> None:
 intents = discord.Intents.default()
 intents.message_content = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)  # prefix unused but required
+bot = commands.Bot(command_prefix="!", intents=intents)
 
 
 @bot.event
 async def on_ready() -> None:
-    # Register slash commands Cog
-    await bot.add_cog(SophiCommands(bot, db, _sessions, _run_shadow))
-    # Sync slash commands with Discord
+    # Create partial functions to pass db and llm_adapter to the review functions
+    async def run_shadow_wrapper(state: dict) -> None:
+        await _run_shadow(db, llm_adapter, state, REVIEW_EVERY_N)
+    
+    async def end_session_wrapper(state: dict) -> None:
+        await _end_session(db, llm_adapter, state, REVIEW_EVERY_N)
+    
+    await bot.add_cog(SophiCommands(bot, db, _sessions, run_shadow_wrapper, llm_adapter))
     try:
         synced = await bot.tree.sync()
         log.info("Synced %d slash command(s)", len(synced))
@@ -252,11 +216,11 @@ async def on_ready() -> None:
 
     vision_note = "uczniowie mogą wysyłać zdjęcia 📸" if llm_adapter.vision_enabled \
                   else "tryb tekstowy (VISION_ENABLED=False)"
-    current_model = llm_adapter.models[llm_adapter.current_model_index] if hasattr(llm_adapter, 'models') else getattr(llm_adapter, 'model', 'unknown')
     print(f"\n✅  SophiClaw ready — {vision_note}")
-    print(f"    Model   : {current_model}")
-    print(f"    DB      : {db.path}")
-    print(f"    Komendy : /help /summary /progress /notes /last10 /end\n")
+    print(f"    Model        : {', '.join(llm_adapter.models)}")
+    print(f"    DB           : {db.path}")
+    print(f"    Auto-review  : co {REVIEW_EVERY_N} sesji")
+    print(f"    Komendy      : /help /summarise /summary /progress /notes /last10 /end\n")
     _timeout_checker.start()
 
 
@@ -268,7 +232,7 @@ async def _timeout_checker() -> None:
         if (now - s["last_active"]).total_seconds() > SESSION_TIMEOUT
     ]
     for uid, state in stale:
-        await _run_shadow(state)
+        await end_session_wrapper(state)
         del _sessions[uid]
 
 
@@ -277,8 +241,6 @@ async def on_message(message: discord.Message) -> None:
     if message.author.bot:
         return
 
-    # Let discord.py handle slash commands — skip text starting with /
-    # (slash commands come through interactions, not on_message)
     if message.content.startswith("/"):
         return
 
@@ -338,8 +300,6 @@ async def on_message(message: discord.Message) -> None:
     _log("assistant", reply, sid)
 
     await _send_response(message, reply)
-
-    # Needed so discord.py processes any prefix commands (unused but good practice)
     await bot.process_commands(message)
 
 

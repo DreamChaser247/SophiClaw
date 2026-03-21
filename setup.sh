@@ -5,6 +5,7 @@ set -e
 
 VENV_DIR=".venv"
 CONFIG_FILE="config.py"
+CONFIG_EXAMPLE="config-example.py"
 GOAL_FILE="goal.json"
 
 # ── Colours ────────────────────────────────────────────────────────
@@ -159,7 +160,6 @@ if [ "$MODE" = "1" ]; then
     fi
 
 else
-    # Advanced
     echo ""
     echo "  Wybierz providera:"
     echo "    ${BOLD}1${RESET}  Google AI Studio    gemini-2.5-flash"
@@ -218,7 +218,6 @@ echo "  Możesz to pominąć i uzupełnić później uruchamiając setup.sh pono
 echo "  Obecny cel to: ""$GOAL_TEXT"
 echo ""
 
-
 if confirm "Ustawić/zaktualizować cel nauki?"; then
     ask "Cel (np. 'Matura rozszerzona maj 2026')" "$GOAL_TEXT"
     GOAL_TEXT="$REPLY"
@@ -248,15 +247,57 @@ API_BASE = "$API_BASE"
 API_KEY  = "$API_KEY"
 MODEL    = "$MODEL"
 
-VISION_ENABLED          = $VISION_ENABLED
-SESSION_TIMEOUT_SECONDS = 3600
-MAX_CONTEXT             = 12
-DB_PATH                 = "sophiclaw.db"
-LOG_PATH                = "log.jsonl"
-GOAL_PATH               = "goal.json"
+VISION_ENABLED           = $VISION_ENABLED
+SESSION_TIMEOUT_SECONDS  = 3600
+MAX_CONTEXT              = 12
+MAX_TOKENS               = 16384
+DB_PATH                  = "sophiclaw.db"
+LOG_PATH                 = "log.jsonl"
+GOAL_PATH                = "goal.json"
+
+REVIEW_EVERY_N_SESSIONS  = 5
 EOF
 
 ok "config.py zapisany"
+
+# ── Validate: ensure config.py has all vars from config-example.py ─
+hr
+echo -e "${BOLD}Weryfikacja config.py${RESET}"
+hr
+
+if [ -f "$CONFIG_EXAMPLE" ] && [ -f "$CONFIG_FILE" ]; then
+    python3 - <<'PYEOF'
+import re, sys
+
+def extract_vars(path):
+    """Return dict of {varname: full_line} for all top-level assignments."""
+    vars_ = {}
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            m = re.match(r'^([A-Z_][A-Z0-9_]*)\s*=', line)
+            if m:
+                vars_[m.group(1)] = line.rstrip()
+    return vars_
+
+example_vars = extract_vars("config-example.py")
+config_vars  = extract_vars("config.py")
+
+missing = {k: v for k, v in example_vars.items() if k not in config_vars}
+
+if not missing:
+    print("✅  config.py zawiera wszystkie wymagane zmienne")
+    sys.exit(0)
+
+print(f"⚠️   Dodaję brakujące zmienne do config.py: {', '.join(missing)}")
+with open("config.py", "a", encoding="utf-8") as f:
+    f.write("\n# Dodane automatycznie przez setup.sh\n")
+    for name, line in missing.items():
+        f.write(line + "\n")
+print("✅  config.py zaktualizowany")
+PYEOF
+else
+    warn "Nie znaleziono config-example.py — pomijam weryfikację zmiennych"
+fi
 
 # ── Done ───────────────────────────────────────────────────────────
 echo ""

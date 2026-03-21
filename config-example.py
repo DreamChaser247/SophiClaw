@@ -32,7 +32,7 @@ DISCORD_BOT_TOKEN = "YOUR_DISCORD_BOT_TOKEN_HERE"
 
 API_BASE = "https://generativelanguage.googleapis.com/v1beta/openai/"
 API_KEY  = "YOUR_API_KEY_HERE"
-MODEL    = "gemini-2.5-flash"
+MODEL    = "gemini-3-flash"
 
 # ── Vision support ─────────────────────────────────────────────────
 # Set True if your model can understand images (photos of notebooks).
@@ -40,9 +40,17 @@ MODEL    = "gemini-2.5-flash"
 VISION_ENABLED = True
 
 # ── Behaviour ──────────────────────────────────────────────────────
-SESSION_TIMEOUT_SECONDS = 3600   # new session after 1 h of silence
-MAX_CONTEXT             = 12     # how many past turns to keep
-MAX_TOKENS              = 16384   # max tokens in LLM response — increase if answers get cut off
-DB_PATH                 = "sophiclaw.db"
-LOG_PATH                = "log.jsonl"
-GOAL_PATH               = "goal.json"
+SESSION_TIMEOUT_SECONDS  = 3600   # new session after 1 h of silence
+MAX_CONTEXT              = 12     # how many past turns to keep
+MAX_TOKENS               = 16384  # max tokens in LLM response
+DB_PATH                  = "sophiclaw.db"
+LOG_PATH                 = "log.jsonl"
+GOAL_PATH                = "goal.json"
+
+# ── Progress reviews ───────────────────────────────────────────────
+# How many completed sessions between automatic background reviews.
+# The review reads all accumulated session notes, calls the LLM, and
+# writes progress_summary.md — silently, no Discord message.
+# Use /summarise to generate one on demand, /summary to read the last one.
+# Set to 0 to disable automatic reviews entirely.
+REVIEW_EVERY_N_SESSIONS  = 5

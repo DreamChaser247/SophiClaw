@@ -238,3 +238,14 @@ class LLMAdapter:
         
         return None  # All models attempted
 
+    def get_model_status(self) -> list[dict]:
+        """Get list of all models with their availability status."""
+        return [
+            {
+                "name": model,
+                "available": self._is_model_available(model),
+                "cooldown_until": self._availability.get(model)
+            }
+            for model in self.models
+        ]
+

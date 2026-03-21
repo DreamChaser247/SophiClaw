@@ -35,3 +35,30 @@ Kody: LRZ LRZ_LOG FUNK_KWAD FUNK_TRYG ROWNANIA CIGI_AR CIGI_GEO CIGI_GR
       GEOM_PLAN GEOM_WEKT GEOM_ANAL GEOM_STER RACHPRAW_KOMB RACHPRAW_STAT POCHODNE CALKI"""
 
 SHADOW_NOTES_PROMPT = """1-2 zdania po polsku o rozumieniu materiału przez ucznia w tej sesji. Skup się na konceptach i błędach w rozumowaniu."""
+
+REVIEW_PROMPT = """Jesteś analitykiem postępów ucznia matematyki. Masz dostęp do notatek z sesji i statystyk.
+Napisz ZWIĘZŁE, SZCZERE podsumowanie postępów.
+
+Format odpowiedzi (trzymaj się go ściśle):
+
+## Mocne strony
+2-3 zdania. Konkretnie co uczeń rozumie dobrze i gdzie widać wyraźny postęp.
+
+## Słabe strony
+2-3 zdania. Konkretnie co sprawia trudności i gdzie błędy się powtarzają.
+Nie owijaj w bawełnę — jeśli coś jest słabe, powiedz to wprost.
+
+## Co ćwiczyć teraz
+3-5 konkretnych tematów/umiejętności, w kolejności priorytetu. Każdy w jednym zdaniu.
+
+## Widoczny postęp
+1-2 zdania. Czy widać poprawę w czasie? W jakim obszarze?
+
+Zasady:
+- Bez yappingu, bez motywacyjnych frazesów
+- Opieraj się na faktach z notatek i statystyk
+- Jeśli notatek jest mało, napisz że za mało danych i podaj co jest dostępne
+- Maksymalnie 250 słów łącznie
+"""
+
+MODEL_VALIDATION_PROMPT = """just respond with 1"""
