@@ -243,8 +243,8 @@ class AddModelModal(discord.ui.Modal):
         new_list_str = ", ".join(f"`{m}`" for m in new_list)
         await interaction.followup.send(
             f"✅ Model `{name}` odpowiedział poprawnie i został dodany.\n"
-            f"Aktualna lista: {new_list_str}\n"
-            "_Użyj /restart aby załadować nową konfigurację._",
+            f"Aktualna lista: {new_list_str}\n\n"
+            "_Zmiany wejdą w życie przy następnym restarcie bota._",
             ephemeral=True,
         )
 
@@ -308,14 +308,14 @@ class SophiCommands(commands.Cog):
         )
         embed.add_field(name="/help",      value="Ta wiadomość",                            inline=False)
         embed.add_field(name="/setup",     value="Skonfiguruj listę modeli AI",             inline=False)
-        embed.add_field(name="/model",     value="Pokaż status modeli lub ustaw domyślny model", inline=False)
+        embed.add_field(name="/model",     value="Pokaż status modeli i cooldowny",         inline=False)
         embed.add_field(name="/summarise", value="Generuj nową analizę postępów (~30 sek)", inline=False)
         embed.add_field(name="/summary",   value="Pokaż ostatnio wygenerowaną analizę",     inline=False)
         embed.add_field(name="/progress",  value="Pasek opanowania każdego tematu",         inline=False)
         embed.add_field(name="/notes",     value="Ostatnie notatki o Twoim rozumieniu",     inline=False)
         embed.add_field(name="/last10",    value="Ostatnie 10 ocenionych prób",             inline=False)
         embed.add_field(name="/end",       value="Zakończ sesję i zapisz postępy",          inline=False)
-        embed.add_field(name="/restart",   value="Uruchom ponownie bota (nowa konfiguracja)", inline=False)
+        embed.add_field(name="/restart",   value="Przeładuj konfigurację (bez restartu)",   inline=False)
         embed.set_footer(text="Możesz też po prostu pisać — nie musisz używać komend.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -372,44 +372,6 @@ class SophiCommands(commands.Cog):
         embed.set_footer(text="Użyj /model <nazwa> żeby ustawić domyślny model\nUżyj /setup żeby dodać lub usunąć modele")
         await interaction.followup.send(embed=embed)
 
-    # ── /restart ───────────────────────────────────────────────────
-
-    @app_commands.command(name="restart", description="Uruchom ponownie bota (ładuje nową konfigurację)")
-    async def restart(self, interaction: discord.Interaction):
-        """Restart the bot to apply configuration changes."""
-        await interaction.response.send_message(
-            "🔄 Trwa restartowanie bota...", ephemeral=True)
-        
-        # Reload modules
-        import importlib
-        import config as config_module
-        import database as database_module
-        import llm as llm_module
-        importlib.reload(config_module)
-        
-        # Recreate database
-        db = database_module.Database(getattr(config_module, "DB_PATH", "db/sophiclaw.db"))
-        db.connect()
-        
-        # Recreate LLM adapter with new config
-        new_llm = llm_module.LLMAdapter(
-            base_url=getattr(config_module, "API_BASE", "https://generativelanguage.googleapis.com/v1beta/openai/"),
-            api_key=getattr(config_module, "API_KEY", ""),
-            model=getattr(config_module, "MODEL", "gemini-2.5-flash"),
-            vision_enabled=getattr(config_module, "VISION_ENABLED", True),
-            max_tokens=getattr(config_module, "MAX_TOKENS", 8192),
-        )
-        
-        # Update the LLM adapter (works because it's mutable)
-        self._llm = new_llm
-        self.db.close()  # Close old database
-        self.db = db
-        
-        await interaction.followup.send(
-            f"✅ Bot został wznowiony z nową konfiguracją!\n"
-            f"Aktualny model: {', '.join(self._llm.models)}",
-            ephemeral=True)
-
     # ── /end ───────────────────────────────────────────────────────
 
     @app_commands.command(name="end", description="Zakończ bieżącą sesję i zapisz postępy")
@@ -420,10 +382,44 @@ class SophiCommands(commands.Cog):
                 "Nie masz aktywnej sesji.", ephemeral=True)
             return
         await interaction.response.send_message("✅ Kończę sesję i zapisuję postępy…")
-        await self._run_shadow(state, interaction.user.id)
+        await self._run_shadow(state)
         await interaction.followup.send("💾 Gotowe! Postępy zapisane.")
 
     # ── /summarise ─────────────────────────────────────────────────
+
+    # ── /restart ───────────────────────────────────────────────────
+
+    @app_commands.command(name="restart",
+                          description="Przeładuj konfigurację bez restartu procesu")
+    async def restart(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        import importlib
+        import config as config_module
+        importlib.reload(config_module)
+
+        # Mutate the global llm_adapter in place so every reference stays valid:
+        # _do_end_session, _timeout_checker, on_message all hold the same object.
+        import sophiclaw as main_module
+        changes = main_module.llm_adapter.reload(
+            base_url       = getattr(config_module, "API_BASE", ""),
+            api_key        = getattr(config_module, "API_KEY", ""),
+            model          = getattr(config_module, "MODEL", "gemini-2.5-flash"),
+            vision_enabled = getattr(config_module, "VISION_ENABLED", True),
+            max_tokens     = getattr(config_module, "MAX_TOKENS", 8192),
+        )
+
+        # Sync REVIEW_EVERY_N so auto-review uses the new value immediately
+        main_module.REVIEW_EVERY_N = getattr(config_module, "REVIEW_EVERY_N_SESSIONS", 5)
+
+        model_str = ", ".join(f"`{m}`" for m in main_module.llm_adapter.models)
+        if changes:
+            changes_str = "\n".join(f"  • {c}" for c in changes)
+            msg = f"✅ Konfiguracja przeładowana.\n{changes_str}\n\nAktualne modele: {model_str}"
+        else:
+            msg = f"✅ Konfiguracja przeładowana — bez zmian.\nModele: {model_str}"
+
+        await interaction.followup.send(msg, ephemeral=True)
 
     @app_commands.command(name="summarise",
                           description="Generuj nową analizę postępów — LLM przegląda wszystkie notatki")
@@ -431,7 +427,7 @@ class SophiCommands(commands.Cog):
         await interaction.response.defer()
         await interaction.followup.send(
             "🔍 Analizuję Twoje postępy… to może potrwać do 30 sekund.")
-        summary = await run_review(self.db, self._llm, interaction.user.id)
+        summary = await run_review(self.db, self._llm)
         if summary.startswith("❌"):
             await interaction.followup.send(summary)
             return
