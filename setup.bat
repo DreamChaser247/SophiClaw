@@ -198,7 +198,7 @@ echo VISION_ENABLED           = !VISION_ENABLED!
 echo SESSION_TIMEOUT_SECONDS  = 3600
 echo MAX_CONTEXT              = 12
 echo MAX_TOKENS               = 16384
-echo DB_PATH                  = "sophiclaw.db"
+echo DB_PATH                  = "db/sophiclaw.db"
 echo LOG_PATH                 = "log.jsonl"
 echo GOAL_PATH                = "goal.json"
 echo.

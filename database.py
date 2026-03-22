@@ -106,7 +106,7 @@ SEED_TOPICS = [
 
 
 class Database:
-    def __init__(self, db_path: str = "sophiclaw.db"):
+    def __init__(self, db_path: str = "db/sophiclaw.db"):
         self.path = Path(db_path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._conn: Optional[sqlite3.Connection] = None

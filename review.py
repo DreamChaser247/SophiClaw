@@ -1,16 +1,11 @@
 """
 review.py — SophiClaw longitudinal progress review & shadow notes
 
-Collects the last 50-100 session notes + per-topic stats,
-sends them to the LLM, and writes a concise summary to
-progress_summary.md.
-
-Also handles shadow notes (post-session analysis) and auto-review triggering.
-
-Called by:
-  - /summarise command  (generates + returns text for Discord)
-  - auto-trigger in sophiclaw.py every REVIEW_EVERY_N_SESSIONS sessions (silent)
-  - _run_shadow after each session completion
+Public API:
+  run_review(db, llm_adapter) -> str
+  read_current_summary() -> tuple[str, str] | None
+  run_shadow(db, llm_adapter, state, review_every_n)
+  end_session(db, llm_adapter, state, review_every_n)
 """
 
 import json
@@ -26,13 +21,11 @@ SUMMARY_PATH = Path("progress_summary.md")
 
 
 def _build_review_input(db) -> str:
-    """Collect notes and stats from DB into a single text block for the LLM."""
     notes  = db.get_recent_notes(100)
     topics = db.get_topic_mastery()
     stats  = db.get_summary_stats()
 
     lines = []
-
     lines.append("=== STATYSTYKI OGÓLNE ===")
     lines.append(f"Łącznie prób: {stats['total_attempts']}")
     lines.append(f"Średnia ocena: {stats['avg_score']:.1f}/6")
@@ -62,10 +55,9 @@ def _build_review_input(db) -> str:
     return "\n".join(lines)
 
 
-async def run_review(db, llm_adapter) -> str:
+async def run_review(db, llm_adapter, user_id: int = None) -> str:
     """
     Generate a longitudinal progress summary.
-
     Writes progress_summary.md and returns the summary text.
     Returns an error string starting with ❌ on failure.
     """
@@ -77,7 +69,7 @@ async def run_review(db, llm_adapter) -> str:
     ]
 
     log.info("Running longitudinal review (LLM call)...")
-    summary = await llm_adapter.send_shadow(messages)
+    summary = await llm_adapter.send_shadow(messages, user_id=user_id, db=db)
 
     if summary.startswith("❌"):
         log.error("Review LLM call failed: %s", summary)
@@ -91,17 +83,16 @@ async def run_review(db, llm_adapter) -> str:
     return summary
 
 
-def read_current_summary() -> str | None:
+def read_current_summary() -> tuple[str, str | None] | None:
     """
-    Read progress_summary.md and return its content, or None if it doesn't exist.
-    Strips the markdown heading line so Discord output is clean.
+    Read progress_summary.md.
+    Returns (body, timestamp_line) or None if the file doesn't exist.
     """
     if not SUMMARY_PATH.exists():
         return None
     text = SUMMARY_PATH.read_text(encoding="utf-8").strip()
-    # Remove the first two header lines (# title + _timestamp_) for Discord display
     lines = text.splitlines()
-    # Find first non-empty line after the header block (skip lines starting with # or _)
+    # Skip header lines (# title and _timestamp_)
     start = 0
     for i, line in enumerate(lines):
         if line.startswith("#") or line.startswith("_"):
@@ -109,25 +100,25 @@ def read_current_summary() -> str | None:
         else:
             break
     body = "\n".join(lines[start:]).strip()
-    # Recover the timestamp line for the footer
     timestamp_line = next((l for l in lines if l.startswith("_")), None)
     return body, timestamp_line
 
 
-# ── Shadow notes & auto-review ───────────────────────────────────────────
+async def _maybe_auto_review(db, llm_adapter, review_every_n: int) -> None:
+    if review_every_n <= 0:
+        return
+    total = db.get_summary_stats().get("total_sessions", 0)
+    if total > 0 and total % review_every_n == 0:
+        log.info("Auto-review triggered at %d sessions", total)
+        await run_review(db, llm_adapter)
 
-async def _run_shadow(db, llm_adapter, state: dict, review_every_n: int = 5) -> None:
+
+async def run_shadow(db, llm_adapter, state: dict, review_every_n: int = 5, user_id: int = None) -> None:
     """
-    Run shadow analysis after session completion.
-    - Scores each attempt (JSON format)
-    - Generates descriptive notes
-    - Triggers auto-review if needed
-    
-    Args:
-        db: Database instance
-        llm_adapter: LLM adapter instance
-        state: Session state dictionary
-        review_every_n: Trigger auto-review every N sessions (0 to disable)
+    Run shadow analysis after a session ends:
+      1. JSON scoring of attempts
+      2. Descriptive note about understanding
+      3. Auto-review if N sessions reached
     """
     sid     = state["session_id"]
     history = state.get("history", [])
@@ -145,16 +136,16 @@ async def _run_shadow(db, llm_adapter, state: dict, review_every_n: int = 5) -> 
         {"role": "system", "content": "Odpowiadaj TYLKO w formacie JSON, bez żadnego innego tekstu."},
         {"role": "user",   "content": f"{prompts.SHADOW_SCORING_PROMPT}\n\nSESJA:\n{transcript}"},
     ]
-    json_text = await llm_adapter.send_shadow(s1_msgs)
+    json_text = await llm_adapter.send_shadow(s1_msgs, user_id=user_id, db=db)
     try:
         clean = json_text.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
         for item in json.loads(clean):
             db.add_attempt(
-                session_id  = sid,
-                topic_code  = item.get("topic", "UNKNOWN"),
-                difficulty  = max(1, min(6, int(item.get("difficulty", 3)))),
-                score       = max(0, min(6, int(item.get("score", 3)))),
-                llm_json    = json.dumps(item, ensure_ascii=False),
+                session_id = sid,
+                topic_code = item.get("topic", "UNKNOWN"),
+                difficulty = max(1, min(6, int(item.get("difficulty", 3)))),
+                score      = max(0, min(6, int(item.get("score", 3)))),
+                llm_json   = json.dumps(item, ensure_ascii=False),
             )
     except Exception as e:
         log.warning("Shadow 1 parse error: %s", e)
@@ -164,7 +155,7 @@ async def _run_shadow(db, llm_adapter, state: dict, review_every_n: int = 5) -> 
         {"role": "system", "content": "Jesteś analitykiem postępów ucznia."},
         {"role": "user",   "content": f"{prompts.SHADOW_NOTES_PROMPT}\n\nSESJA:\n{transcript}"},
     ]
-    note = await llm_adapter.send_shadow(s2_msgs)
+    note = await llm_adapter.send_shadow(s2_msgs, user_id=user_id, db=db)
     if note and not note.startswith("❌"):
         db.add_note(sid, note.strip())
 
@@ -172,20 +163,9 @@ async def _run_shadow(db, llm_adapter, state: dict, review_every_n: int = 5) -> 
     db.end_session(sid)
     log.info("Shadow done for session %s", sid)
 
-    # Auto-review every N completed sessions (silent — just writes the file)
     await _maybe_auto_review(db, llm_adapter, review_every_n)
 
 
-async def _end_session(db, llm_adapter, state: dict, review_every_n: int = 5) -> None:
-    """Alias used by timeout checker — same as _run_shadow."""
-    await _run_shadow(db, llm_adapter, state, review_every_n)
-
-
-async def _maybe_auto_review(db, llm_adapter, review_every_n: int = 5) -> None:
-    """Run a silent longitudinal review every REVIEW_EVERY_N sessions."""
-    if review_every_n <= 0:
-        return
-    total = db.get_summary_stats().get("total_sessions", 0)
-    if total > 0 and total % review_every_n == 0:
-        log.info("Auto-review triggered at %d sessions", total)
-        await run_review(db, llm_adapter)   # writes file, no Discord message
+async def end_session(db, llm_adapter, state: dict, review_every_n: int = 5, user_id: int = None) -> None:
+    """End a session — currently identical to run_shadow, kept separate for clarity."""
+    await run_shadow(db, llm_adapter, state, review_every_n, user_id)

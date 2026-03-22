@@ -251,7 +251,7 @@ VISION_ENABLED           = $VISION_ENABLED
 SESSION_TIMEOUT_SECONDS  = 3600
 MAX_CONTEXT              = 12
 MAX_TOKENS               = 16384
-DB_PATH                  = "sophiclaw.db"
+DB_PATH                  = "db/sophiclaw.db"
 LOG_PATH                 = "log.jsonl"
 GOAL_PATH                = "goal.json"
 

@@ -22,7 +22,7 @@ import llm
 import latex_render
 import prompts
 from commands import SophiCommands
-from review import run_review, _run_shadow, _end_session
+from review import end_session
 
 # ── Logging ────────────────────────────────────────────────────────
 
@@ -40,7 +40,7 @@ if not getattr(config, "DISCORD_BOT_TOKEN", ""):
 
 # ── Singletons ─────────────────────────────────────────────────────
 
-db = database.Database(getattr(config, "DB_PATH", "sophiclaw.db"))
+db = database.Database(getattr(config, "DB_PATH", "db/sophiclaw.db"))
 db.connect()
 
 llm_adapter = llm.LLMAdapter(
@@ -51,10 +51,10 @@ llm_adapter = llm.LLMAdapter(
     max_tokens=getattr(config, "MAX_TOKENS", 8192),
 )
 
-SESSION_TIMEOUT      = getattr(config, "SESSION_TIMEOUT_SECONDS", 3600)
-MAX_CONTEXT          = getattr(config, "MAX_CONTEXT", 12)
-LOG_PATH             = Path(getattr(config, "LOG_PATH", "log.jsonl"))
-REVIEW_EVERY_N       = getattr(config, "REVIEW_EVERY_N_SESSIONS", 5)
+SESSION_TIMEOUT = getattr(config, "SESSION_TIMEOUT_SECONDS", 3600)
+MAX_CONTEXT     = getattr(config, "MAX_CONTEXT", 12)
+LOG_PATH        = Path(getattr(config, "LOG_PATH", "log.jsonl"))
+REVIEW_EVERY_N  = getattr(config, "REVIEW_EVERY_N_SESSIONS", 5)
 
 # ── Goal loading ───────────────────────────────────────────────────
 
@@ -81,20 +81,28 @@ def _load_goal() -> str:
 
 SYSTEM_PROMPT = prompts.BASE_PROMPT + _load_goal()
 
-# ── In-memory session state ────────────────────────────────────────
-# { user_id: { session_id, last_active, history } }
+# ── Session state ──────────────────────────────────────────────────
+
 _sessions: dict[int, dict] = {}
+
+# Module-level wrappers — defined here so both _get_or_create_session
+# and _timeout_checker can reference them without closure tricks.
+# They are plain async functions, not closures, so they're safe to call
+# from any coroutine in this module.
+
+async def _do_end_session(state: dict, user_id: int) -> None:
+    await end_session(db, llm_adapter, state, REVIEW_EVERY_N, user_id)
 
 
 def _get_or_create_session(user_id: int) -> dict:
-    now = datetime.now(timezone.utc)
+    now   = datetime.now(timezone.utc)
     state = _sessions.get(user_id)
 
     if state:
         idle = (now - state["last_active"]).total_seconds()
         if idle > SESSION_TIMEOUT:
             log.info("Session timeout for user %d", user_id)
-            asyncio.create_task(_end_session(state))
+            asyncio.create_task(_do_end_session(state, user_id))
             state = None
 
     if not state:
@@ -120,10 +128,6 @@ def _log(role: str, content: str, session_id: str, has_image: bool = False) -> N
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
-# ── Shadow + auto-review ───────────────────────────────────────────
-# These functions are now in review.py for better organization
-
-
 # ── Message sending ────────────────────────────────────────────────
 
 def _split_chunks(text: str, limit: int = 1900) -> list[str]:
@@ -141,10 +145,6 @@ def _split_chunks(text: str, limit: int = 1900) -> list[str]:
 
 
 async def _send_response(message: discord.Message, text: str) -> None:
-    """
-    Send bot response, rendering [LaTeX] tags as PNG images inline.
-    Complex formulas → image, simple formulas → unicode text.
-    """
     first = True
 
     async def send(content: Optional[str] = None, file: Optional[discord.File] = None):
@@ -200,14 +200,9 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready() -> None:
-    # Create partial functions to pass db and llm_adapter to the review functions
-    async def run_shadow_wrapper(state: dict) -> None:
-        await _run_shadow(db, llm_adapter, state, REVIEW_EVERY_N)
-    
-    async def end_session_wrapper(state: dict) -> None:
-        await _end_session(db, llm_adapter, state, REVIEW_EVERY_N)
-    
-    await bot.add_cog(SophiCommands(bot, db, _sessions, run_shadow_wrapper, llm_adapter))
+    # Pass _do_end_session as the run_shadow callable for /end command —
+    # it has the right signature: (state) -> None
+    await bot.add_cog(SophiCommands(bot, db, _sessions, _do_end_session, llm_adapter))
     try:
         synced = await bot.tree.sync()
         log.info("Synced %d slash command(s)", len(synced))
@@ -220,7 +215,7 @@ async def on_ready() -> None:
     print(f"    Model        : {', '.join(llm_adapter.models)}")
     print(f"    DB           : {db.path}")
     print(f"    Auto-review  : co {REVIEW_EVERY_N} sesji")
-    print(f"    Komendy      : /help /summarise /summary /progress /notes /last10 /end\n")
+    print(f"    Komendy      : /help /setup /model /summarise /summary /progress /notes /last10 /end /restart\n")
     _timeout_checker.start()
 
 
@@ -232,7 +227,7 @@ async def _timeout_checker() -> None:
         if (now - s["last_active"]).total_seconds() > SESSION_TIMEOUT
     ]
     for uid, state in stale:
-        await end_session_wrapper(state)
+        await _do_end_session(state)   # module-level — always reachable
         del _sessions[uid]
 
 
@@ -240,7 +235,6 @@ async def _timeout_checker() -> None:
 async def on_message(message: discord.Message) -> None:
     if message.author.bot:
         return
-
     if message.content.startswith("/"):
         return
 
@@ -251,7 +245,6 @@ async def on_message(message: discord.Message) -> None:
     sid   = state["session_id"]
     db.increment_turns(sid)
 
-    # ── Collect images ─────────────────────────────────────────────
     images: list[bytes] = []
     has_image = False
 
@@ -274,7 +267,6 @@ async def on_message(message: discord.Message) -> None:
                             images.append(await resp.read())
             has_image = True
 
-    # ── Build user content ─────────────────────────────────────────
     if has_image:
         user_content = llm_adapter.build_image_content(
             text or "Proszę sprawdź moje rozwiązanie ze zdjęcia.", images
@@ -284,14 +276,13 @@ async def on_message(message: discord.Message) -> None:
             return
         user_content = text
 
-    # ── Conversation ───────────────────────────────────────────────
     state["history"].append({"role": "user", "content": user_content})
     state["history"] = state["history"][-MAX_CONTEXT:]
 
     msgs = [{"role": "system", "content": SYSTEM_PROMPT}] + state["history"]
 
     async with message.channel.typing():
-        reply = await llm_adapter.send(msgs)
+        reply = await llm_adapter.send(msgs, user_id=uid, db=db)
 
     state["history"].append({"role": "assistant", "content": reply})
     state["history"] = state["history"][-MAX_CONTEXT:]

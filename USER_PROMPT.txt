@@ -1,0 +1,3 @@
+I want a /setup that will allow user to change model list in config.py. the bot shoud as user what do they want to setup giving one option(for now) - models. It should be a discord poll listing all options(only model for now)
+If user selects the model options. create a second poll to asking whether user wants to add or remove a model from the list. If user wishes to remove a model, create a third poll listing all available models(this one should be multi-choice). remove all models selcted by the user from the config.py file.
+I user wants to add a model ask for a specyfic nametag eg "gemini-2.5-flash". when user types the nametag check it with with a simple prompt "just answer 1"(this prompt should be placed in @prompts.py) if the name tag works add it to config.py

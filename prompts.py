@@ -36,7 +36,7 @@ Kody: LRZ LRZ_LOG FUNK_KWAD FUNK_TRYG ROWNANIA CIGI_AR CIGI_GEO CIGI_GR
 
 SHADOW_NOTES_PROMPT = """1-2 zdania po polsku o rozumieniu materiału przez ucznia w tej sesji. Skup się na konceptach i błędach w rozumowaniu."""
 
-REVIEW_PROMPT = """Jesteś analitykiem postępów ucznia matematyki. Masz dostęp do notatek z sesji i statystyk.
+REVIEW_PROMPT = """Jesteś analitykiem postępów ucznia matematyki. Masz dostęp do notatek z sesji i statystyk prób.
 Napisz ZWIĘZŁE, SZCZERE podsumowanie postępów.
 
 Format odpowiedzi (trzymaj się go ściśle):

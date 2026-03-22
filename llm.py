@@ -62,6 +62,13 @@ class LLMAdapter:
             vision_enabled,
         )
         self._log_availability_status()
+    
+    def get_user_preferred_model(self, user_id: int, db) -> Optional[str]:
+        """Get a user's preferred model from the database."""
+        preferred = db.get_user_model_preference(user_id)
+        if preferred and preferred in self.models:
+            return preferred
+        return None
 
     # ── Model Availability Tracking ────────────────────────────────────────────
 
@@ -137,13 +144,13 @@ class LLMAdapter:
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
-    async def send(self, messages: list[dict]) -> str:
+    async def send(self, messages: list[dict], user_id: Optional[int] = None, db = None) -> str:
         """Send a conversation and return the assistant reply as a string."""
-        return await self._call(messages, temperature=self.temperature)
+        return await self._call(messages, temperature=self.temperature, user_id=user_id, db=db)
 
-    async def send_shadow(self, messages: list[dict]) -> str:
+    async def send_shadow(self, messages: list[dict], user_id: Optional[int] = None, db = None) -> str:
         """Low-temperature call used for shadow scoring / notes (more deterministic)."""
-        return await self._call(messages, temperature=0.2)
+        return await self._call(messages, temperature=0.2, user_id=user_id, db=db)
 
     # ── Multimodal helpers ─────────────────────────────────────────────────────
 
@@ -170,13 +177,18 @@ class LLMAdapter:
 
     # ── Internal ───────────────────────────────────────────────────────────────
 
-    async def _call(self, messages: list[dict], temperature: float) -> str:
+    async def _call(self, messages: list[dict], temperature: float, user_id: Optional[int] = None, db = None) -> str:
         """Core call with retry on rate-limit and model fallback with cooldown tracking."""
         attempted_models = set()
         
+        # If user has a preferred model and we have db access, try it first
+        preferred_model = None
+        if user_id is not None and db is not None:
+            preferred_model = self.get_user_preferred_model(user_id, db)
+        
         for model_cycle in range(len(self.models)):
             # Find the next available model
-            next_model_index = self._find_next_available_model(attempted_models)
+            next_model_index = self._find_next_available_model(attempted_models, preferred_model)
             if next_model_index is None:
                 break  # All models tried
                 
@@ -224,9 +236,15 @@ class LLMAdapter:
 
         return "❌ Nie udało się uzyskać odpowiedzi po wyczerpaniu wszystkich dostępnych modeli."
 
-    def _find_next_available_model(self, attempted_indices: set[int]) -> Optional[int]:
-        """Find the next available model index, trying available models first."""
-        # First, try models that are available and not yet attempted
+    def _find_next_available_model(self, attempted_indices: set[int], preferred_model: Optional[str] = None) -> Optional[int]:
+        """Find the next available model index, trying preferred model first if available."""
+        # First, try the preferred model if it exists and is available
+        if preferred_model and preferred_model in self.models:
+            preferred_index = self.models.index(preferred_model)
+            if preferred_index not in attempted_indices and self._is_model_available(preferred_model):
+                return preferred_index
+        
+        # Then try other available models
         for i in range(len(self.models)):
             if i not in attempted_indices and self._is_model_available(self.models[i]):
                 return i
