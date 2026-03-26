@@ -21,7 +21,7 @@ from review import run_review, read_current_summary
 log = logging.getLogger("sophiclaw.commands")
 
 
-# ── text helpers ───────────────────────────────────────────────────
+# ── helpers ────────────────────────────────────────────────────────
 
 def _split_chunks(text: str, limit: int = 1900) -> list[str]:
     if len(text) <= limit:
@@ -48,19 +48,43 @@ async def _send_summary(send_fn, body: str, generated_now: bool,
         await send_fn("💾 Zapisano do `progress_summary.md`")
 
 
+async def _safe_defer(interaction: discord.Interaction, ephemeral: bool = False) -> bool:
+    """
+    Acknowledge the interaction within Discord's 3-second window.
+    Returns False (and silently exits) if the token has already expired
+    (error 10062 — stale interaction from a reconnect or double-click).
+    """
+    try:
+        await interaction.response.defer(ephemeral=ephemeral)
+        return True
+    except discord.errors.NotFound:
+        log.warning("Stale interaction ignored for command (10062)")
+        return False
+    except discord.errors.InteractionResponded:
+        # Already responded (e.g. double-invocation) — still safe to followup
+        return True
+
+
+async def _safe_send(interaction: discord.Interaction, *args, **kwargs) -> bool:
+    """
+    Send the initial interaction response (non-deferred commands).
+    Returns False if the token has expired.
+    """
+    try:
+        await interaction.response.send_message(*args, **kwargs)
+        return True
+    except discord.errors.NotFound:
+        log.warning("Stale interaction ignored (10062)")
+        return False
+    except discord.errors.InteractionResponded:
+        return True
+
+
 # ══════════════════════════════════════════════════════════════════
 # /setup — multi-step UI flow
-#
-# Step 1  SetupTopicSelect    — "What to configure?" (only Models)
-# Step 2  SetupActionSelect   — "Add or Remove?"
-# Step 3a SetupRemoveSelect   — multi-select models to delete
-# Step 3b SetupProviderSelect — pick provider before adding
-# Step 4  AddModelModal       — type model name; shows known models as hint
 # ══════════════════════════════════════════════════════════════════
 
 class SetupTopicSelect(discord.ui.View):
-    """Step 1: what do you want to configure?"""
-
     def __init__(self):
         super().__init__(timeout=120)
 
@@ -82,8 +106,6 @@ class SetupTopicSelect(discord.ui.View):
 
 
 class SetupActionSelect(discord.ui.View):
-    """Step 2: add or remove?"""
-
     def __init__(self):
         super().__init__(timeout=120)
 
@@ -116,8 +138,6 @@ class SetupActionSelect(discord.ui.View):
 
 
 class SetupRemoveSelect(discord.ui.View):
-    """Step 3a: multi-select models to remove."""
-
     def __init__(self, current_models: list[str]):
         super().__init__(timeout=120)
         options = [discord.SelectOption(label=m, value=m) for m in current_models[:25]]
@@ -128,8 +148,8 @@ class SetupRemoveSelect(discord.ui.View):
     @discord.ui.select(
         placeholder="Wybierz modele do usunięcia…",
         min_values=1,
-        max_values=1,  # overridden in __init__
-        options=[discord.SelectOption(label="–", value="–")],  # replaced in __init__
+        max_values=1,
+        options=[discord.SelectOption(label="–", value="–")],
     )
     async def remove_select(self, interaction: discord.Interaction,
                             select: discord.ui.Select):
@@ -152,8 +172,6 @@ class SetupRemoveSelect(discord.ui.View):
 
 
 class SetupProviderSelect(discord.ui.View):
-    """Step 3b: pick provider before entering a model name."""
-
     def __init__(self):
         super().__init__(timeout=120)
         options = [
@@ -169,7 +187,7 @@ class SetupProviderSelect(discord.ui.View):
 
     @discord.ui.select(
         placeholder="Wybierz providera…",
-        options=[discord.SelectOption(label="–", value="–")],  # replaced in __init__
+        options=[discord.SelectOption(label="–", value="–")],
     )
     async def provider_select(self, interaction: discord.Interaction,
                               select: discord.ui.Select):
@@ -178,12 +196,6 @@ class SetupProviderSelect(discord.ui.View):
 
 
 class AddModelModal(discord.ui.Modal):
-    """
-    Step 4: text input for model name.
-    A second read-only field lists known models for this provider as a hint.
-    """
-
-    # These are overridden per-instance in __init__ after super().__init__()
     model_name = discord.ui.TextInput(
         label="Nazwa modelu",
         placeholder="np. gemini-2.5-flash",
@@ -200,7 +212,6 @@ class AddModelModal(discord.ui.Modal):
     def __init__(self, provider):
         super().__init__(title=f"Dodaj model — {provider.name}")
         self._provider = provider
-
         self.model_name.placeholder = (
             provider.models[0] if provider.models else "wpisz nazwę modelu…"
         )
@@ -210,7 +221,6 @@ class AddModelModal(discord.ui.Modal):
         name = self.model_name.value.strip()
         await interaction.response.defer(ephemeral=True, thinking=True)
 
-        # Check if already in list
         current = config_writer.get_model_list()
         if name in current:
             await interaction.followup.send(
@@ -218,7 +228,6 @@ class AddModelModal(discord.ui.Modal):
             )
             return
 
-        # Validate: ping the provider with the model name
         ok, err = await _validate_model(self._provider, name)
 
         if not ok:
@@ -231,7 +240,6 @@ class AddModelModal(discord.ui.Modal):
             )
             return
 
-        # Write to config.py
         try:
             new_list = config_writer.add_model(name)
         except Exception as e:
@@ -250,11 +258,6 @@ class AddModelModal(discord.ui.Modal):
 
 
 async def _validate_model(provider, model_name: str) -> tuple[bool, str]:
-    """
-    Ping provider/model with MODEL_VALIDATION_PROMPT.
-    Uses API_KEY from config.py — must be valid for the chosen provider.
-    Returns (True, "") on success, (False, error_str) on failure.
-    """
     try:
         import config  # type: ignore
         api_key = getattr(config, "API_KEY", "") or "no-key"
@@ -337,12 +340,11 @@ class SophiCommands(commands.Cog):
 
     @app_commands.command(name="model", description="Pokaż status modeli i cooldowny")
     async def model(self, interaction: discord.Interaction, model_name: str = None):
-        await interaction.response.defer(ephemeral=True)
-        
+        if not await _safe_defer(interaction, ephemeral=True):
+            return
+
         if model_name:
-            # Set model as default if it exists in the list
             if model_name in self._llm.models:
-                # Save to database
                 user_id = interaction.user.id
                 self.db.set_user_model_preference(user_id, model_name)
                 await interaction.followup.send(
@@ -357,11 +359,11 @@ class SophiCommands(commands.Cog):
                     ephemeral=True
                 )
                 return
-        
-        # Show status if no model name provided
+
         status = self._llm.get_model_status()
         embed = discord.Embed(title="Status modeli", color=0x5865F2)
-        embed.add_field(name="Twój domyślny model", value=f"`{self.db.get_user_model_preference(interaction.user.id)}`", inline=False)
+        pref = self.db.get_user_model_preference(interaction.user.id)
+        embed.add_field(name="Twój domyślny model", value=f"`{pref}`" if pref else "_(brak)_", inline=False)
         for m in status:
             if m["available"]:
                 value = "✅ dostępny"
@@ -376,55 +378,29 @@ class SophiCommands(commands.Cog):
 
     @app_commands.command(name="end", description="Zakończ bieżącą sesję i zapisz postępy")
     async def end(self, interaction: discord.Interaction):
-        state = self._sessions.pop(interaction.user.id, None)
+        # Look up state BEFORE touching Discord — don't pop yet
+        state = self._sessions.get(interaction.user.id)
         if not state:
-            await interaction.response.send_message(
-                "Nie masz aktywnej sesji.", ephemeral=True)
+            if not await _safe_send(interaction, "Nie masz aktywnej sesji.", ephemeral=True):
+                return
             return
-        await interaction.response.send_message("✅ Kończę sesję i zapisuję postępy…")
-        await self._run_shadow(state)
+
+        # Acknowledge first, then remove from dict
+        if not await _safe_send(interaction, "✅ Kończę sesję i zapisuję postępy…"):
+            return
+
+        # Now it's safe to pop — Discord already confirmed receipt
+        self._sessions.pop(interaction.user.id, None)
+        await self._run_shadow(state, interaction.user.id)
         await interaction.followup.send("💾 Gotowe! Postępy zapisane.")
 
     # ── /summarise ─────────────────────────────────────────────────
 
-    # ── /restart ───────────────────────────────────────────────────
-
-    @app_commands.command(name="restart",
-                          description="Przeładuj konfigurację bez restartu procesu")
-    async def restart(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-
-        import importlib
-        import config as config_module
-        importlib.reload(config_module)
-
-        # Mutate the global llm_adapter in place so every reference stays valid:
-        # _do_end_session, _timeout_checker, on_message all hold the same object.
-        import sophiclaw as main_module
-        changes = main_module.llm_adapter.reload(
-            base_url       = getattr(config_module, "API_BASE", ""),
-            api_key        = getattr(config_module, "API_KEY", ""),
-            model          = getattr(config_module, "MODEL", "gemini-2.5-flash"),
-            vision_enabled = getattr(config_module, "VISION_ENABLED", True),
-            max_tokens     = getattr(config_module, "MAX_TOKENS", 8192),
-        )
-
-        # Sync REVIEW_EVERY_N so auto-review uses the new value immediately
-        main_module.REVIEW_EVERY_N = getattr(config_module, "REVIEW_EVERY_N_SESSIONS", 5)
-
-        model_str = ", ".join(f"`{m}`" for m in main_module.llm_adapter.models)
-        if changes:
-            changes_str = "\n".join(f"  • {c}" for c in changes)
-            msg = f"✅ Konfiguracja przeładowana.\n{changes_str}\n\nAktualne modele: {model_str}"
-        else:
-            msg = f"✅ Konfiguracja przeładowana — bez zmian.\nModele: {model_str}"
-
-        await interaction.followup.send(msg, ephemeral=True)
-
     @app_commands.command(name="summarise",
                           description="Generuj nową analizę postępów — LLM przegląda wszystkie notatki")
     async def summarise(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+        if not await _safe_defer(interaction):
+            return
         await interaction.followup.send(
             "🔍 Analizuję Twoje postępy… to może potrwać do 30 sekund.")
         summary = await run_review(self.db, self._llm)
@@ -438,7 +414,8 @@ class SophiCommands(commands.Cog):
     @app_commands.command(name="summary",
                           description="Pokaż ostatnio wygenerowaną analizę postępów")
     async def summary(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+        if not await _safe_defer(interaction):
+            return
         result = read_current_summary()
         if result is None:
             await interaction.followup.send(
@@ -452,7 +429,8 @@ class SophiCommands(commands.Cog):
 
     @app_commands.command(name="progress", description="Opanowanie każdego tematu matematyki")
     async def progress(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+        if not await _safe_defer(interaction):
+            return
         active = [t for t in self.db.get_topic_mastery() if t["attempt_count"]]
         if not active:
             await interaction.followup.send(
@@ -479,7 +457,8 @@ class SophiCommands(commands.Cog):
     @app_commands.command(name="notes",
                           description="Ostatnie notatki o Twoim rozumieniu matematyki")
     async def notes(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+        if not await _safe_defer(interaction):
+            return
         notes = self.db.get_recent_notes(8)
         if not notes:
             await interaction.followup.send(
@@ -494,7 +473,8 @@ class SophiCommands(commands.Cog):
 
     @app_commands.command(name="last10", description="Ostatnie 10 ocenionych prób")
     async def last10(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+        if not await _safe_defer(interaction):
+            return
         attempts = self.db.get_last_attempts(10)
         if not attempts:
             await interaction.followup.send("Brak historii prób.")
@@ -510,3 +490,35 @@ class SophiCommands(commands.Cog):
             )
         embed.description = "\n".join(lines)
         await interaction.followup.send(embed=embed)
+
+    # ── /restart ───────────────────────────────────────────────────
+
+    @app_commands.command(name="restart",
+                          description="Przeładuj konfigurację bez restartu procesu")
+    async def restart(self, interaction: discord.Interaction):
+        if not await _safe_defer(interaction, ephemeral=True):
+            return
+
+        import importlib
+        import config as config_module
+        importlib.reload(config_module)
+
+        import sophiclaw as main_module
+        changes = main_module.llm_adapter.reload(
+            base_url       = getattr(config_module, "API_BASE", ""),
+            api_key        = getattr(config_module, "API_KEY", ""),
+            model          = getattr(config_module, "MODEL", "gemini-2.5-flash"),
+            vision_enabled = getattr(config_module, "VISION_ENABLED", True),
+            max_tokens     = getattr(config_module, "MAX_TOKENS", 8192),
+        )
+
+        main_module.REVIEW_EVERY_N = getattr(config_module, "REVIEW_EVERY_N_SESSIONS", 5)
+
+        model_str = ", ".join(f"`{m}`" for m in main_module.llm_adapter.models)
+        if changes:
+            changes_str = "\n".join(f"  • {c}" for c in changes)
+            msg = f"✅ Konfiguracja przeładowana.\n{changes_str}\n\nAktualne modele: {model_str}"
+        else:
+            msg = f"✅ Konfiguracja przeładowana — bez zmian.\nModele: {model_str}"
+
+        await interaction.followup.send(msg, ephemeral=True)
