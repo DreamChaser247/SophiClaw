@@ -80,6 +80,40 @@ async def _safe_send(interaction: discord.Interaction, *args, **kwargs) -> bool:
         return True
 
 
+async def _safe_edit(interaction: discord.Interaction, **kwargs) -> bool:
+    """
+    Edit the original message from a View callback.
+    Returns False if the interaction token has expired.
+    """
+    try:
+        await interaction.response.edit_message(**kwargs)
+        return True
+    except discord.errors.NotFound:
+        log.warning("Stale view interaction ignored (10062)")
+        return False
+    except discord.errors.InteractionResponded:
+        # Already responded — try editing via followup
+        try:
+            await interaction.edit_original_response(**kwargs)
+            return True
+        except Exception:
+            return False
+
+
+async def _safe_modal(interaction: discord.Interaction, modal: discord.ui.Modal) -> bool:
+    """
+    Send a modal response. Returns False if the token has expired.
+    """
+    try:
+        await interaction.response.send_modal(modal)
+        return True
+    except discord.errors.NotFound:
+        log.warning("Stale modal interaction ignored (10062)")
+        return False
+    except discord.errors.InteractionResponded:
+        return True
+
+
 # ══════════════════════════════════════════════════════════════════
 # /setup — multi-step UI flow
 # ══════════════════════════════════════════════════════════════════
@@ -99,7 +133,8 @@ class SetupTopicSelect(discord.ui.View):
     )
     async def topic_select(self, interaction: discord.Interaction,
                            select: discord.ui.Select):
-        await interaction.response.edit_message(
+        await _safe_edit(
+            interaction,
             content="**Konfiguracja modeli AI** — co chcesz zrobić?",
             view=SetupActionSelect(),
         )
@@ -123,15 +158,16 @@ class SetupActionSelect(discord.ui.View):
         if select.values[0] == "remove":
             current = config_writer.get_model_list()
             if not current:
-                await interaction.response.edit_message(
-                    content="❌ Brak modeli w config.py.", view=None)
+                await _safe_edit(interaction, content="❌ Brak modeli w config.py.", view=None)
                 return
-            await interaction.response.edit_message(
+            await _safe_edit(
+                interaction,
                 content="**Usuń modele** — zaznacz które chcesz usunąć:",
                 view=SetupRemoveSelect(current),
             )
         else:
-            await interaction.response.edit_message(
+            await _safe_edit(
+                interaction,
                 content="**Dodaj model** — najpierw wybierz providera:",
                 view=SetupProviderSelect(),
             )
@@ -156,12 +192,13 @@ class SetupRemoveSelect(discord.ui.View):
         try:
             remaining = config_writer.remove_models(select.values)
         except ValueError as e:
-            await interaction.response.edit_message(content=f"❌ {e}", view=None)
+            await _safe_edit(interaction, content=f"❌ {e}", view=None)
             return
 
         removed_str   = ", ".join(f"`{m}`" for m in select.values)
         remaining_str = ", ".join(f"`{m}`" for m in remaining) if remaining else "_(brak)_"
-        await interaction.response.edit_message(
+        await _safe_edit(
+            interaction,
             content=(
                 f"✅ Usunięto: {removed_str}\n"
                 f"Pozostałe modele: {remaining_str}\n\n"
@@ -192,7 +229,7 @@ class SetupProviderSelect(discord.ui.View):
     async def provider_select(self, interaction: discord.Interaction,
                               select: discord.ui.Select):
         provider = PROVIDER_BY_NAME[select.values[0]]
-        await interaction.response.send_modal(AddModelModal(provider))
+        await _safe_modal(interaction, AddModelModal(provider))
 
 
 class AddModelModal(discord.ui.Modal):
@@ -219,7 +256,11 @@ class AddModelModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction):
         name = self.model_name.value.strip()
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+        except (discord.errors.NotFound, discord.errors.InteractionResponded):
+            log.warning("Stale modal submit ignored (10062)")
+            return
 
         current = config_writer.get_model_list()
         if name in current:
@@ -320,15 +361,17 @@ class SophiCommands(commands.Cog):
         embed.add_field(name="/end",       value="Zakończ sesję i zapisz postępy",          inline=False)
         embed.add_field(name="/restart",   value="Przeładuj konfigurację (bez restartu)",   inline=False)
         embed.set_footer(text="Możesz też po prostu pisać — nie musisz używać komend.")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await _safe_send(interaction, embed=embed, ephemeral=True)
 
     # ── /setup ─────────────────────────────────────────────────────
 
     @app_commands.command(name="setup", description="Skonfiguruj listę modeli AI")
     async def setup(self, interaction: discord.Interaction):
+        if not await _safe_defer(interaction, ephemeral=True):
+            return
         current = config_writer.get_model_list()
         current_str = ", ".join(f"`{m}`" for m in current) if current else "_(brak)_"
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"⚙️ **Konfiguracja SophiClaw**\n"
             f"Aktualne modele: {current_str}\n\n"
             f"Co chcesz skonfigurować?",

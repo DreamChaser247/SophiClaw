@@ -1,11 +1,5 @@
 """
 llm.py — SophiClaw provider-agnostic LLM adapter
-
-Uses the openai Python library as a universal client.
-Any OpenAI-compatible endpoint works: Google AI Studio, Ollama,
-OpenRouter, Grok, Groq, OpenAI, etc.
-
-sophiclaw.py never imports anything provider-specific — only this module.
 """
 
 import asyncio
@@ -25,11 +19,6 @@ RATE_LIMIT_COOLDOWN_HOURS = 4
 
 
 class LLMAdapter:
-    """
-    Thin async wrapper around any OpenAI-compatible API.
-    Instantiated once at bot startup from config values.
-    """
-
     def __init__(
         self,
         base_url: str,
@@ -56,29 +45,17 @@ class LLMAdapter:
 
     def reload(self, base_url: str, api_key: str, model: str | list[str],
                vision_enabled: bool, max_tokens: int) -> list[str]:
-        """
-        Update adapter in-place from new config values.
-        Called by /restart — mutates the existing instance so all references
-        in sophiclaw.py (globals, _do_end_session closure, etc.) stay valid.
-        Rate-limit state (_availability) is preserved across reloads.
-        Returns a list of human-readable change descriptions.
-        """
         new_models = [model] if isinstance(model, str) else list(model)
         changes = []
-
         if new_models != self.models:
             changes.append(f"models: {self.models} → {new_models}")
             self.models = new_models
-
         if vision_enabled != self.vision_enabled:
             changes.append(f"vision: {self.vision_enabled} → {vision_enabled}")
             self.vision_enabled = vision_enabled
-
         if max_tokens != self.max_tokens:
             changes.append(f"max_tokens: {self.max_tokens} → {max_tokens}")
             self.max_tokens = max_tokens
-
-        # Always rebuild the client — base_url or api_key may have changed
         self._client = AsyncOpenAI(base_url=base_url, api_key=api_key or "no-key")
         log.info("LLMAdapter reloaded | models=%s | vision=%s", self.models, vision_enabled)
         return changes
@@ -170,8 +147,8 @@ class LLMAdapter:
     def get_model_status(self) -> list[dict]:
         return [
             {
-                "name":          m,
-                "available":     self._is_model_available(m),
+                "name":           m,
+                "available":      self._is_model_available(m),
                 "cooldown_until": self._availability.get(m),
             }
             for m in self.models
@@ -211,7 +188,16 @@ class LLMAdapter:
                     if e.status_code == 429:
                         log.warning("Rate limited (429) on %s — marking unavailable", current)
                         self._mark_model_unavailable(current)
-                        break
+                        break  # try next model
+
+                    if e.status_code == 503 and attempt == 0:
+                        log.warning("Service unavailable (503) on %s — retrying in 3 s", current)
+                        await asyncio.sleep(3)
+                        continue
+                    if e.status_code == 503:
+                        log.warning("Service unavailable (503) on %s — falling back to next model", current)
+                        break  # try next model
+
                     log.error("API error %s: %s", e.status_code, e.message)
                     return (f"❌ Błąd API (kod {e.status_code}). "
                             "Sprawdź swój klucz API w config.py i spróbuj ponownie.")

@@ -3,6 +3,7 @@ config.py
 goal.json
 db/
 *.jsonl
+progress_summary.md
 
 # Python
 __pycache__/
